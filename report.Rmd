@@ -1,0 +1,161 @@
+---
+title: "Exploration: Funding Acknowledgements from OpenAIRE in WOS-KB"
+author: "Najko Jahn"
+date: "10/7/2019"
+output: github_document
+---
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(
+  comment = "#>",
+  collapse = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  echo = TRUE
+)
+```
+
+```{r setup, echo = FALSE}
+require(tidyverse)
+require(RJDBC)
+require(rJava)
+.jinit()
+jdbcDriver <-
+  JDBC(driverClass = "oracle.jdbc.OracleDriver", classPath = "inst/jdbc_driver/ojdbc8.jar")
+jdbcConnection <-
+  dbConnect(
+    jdbcDriver,
+    "jdbc:oracle:thin:@//biblio-p-db01:1521/bibliodb01.fiz.karlsruhe",
+    Sys.getenv("kb_user"),
+    Sys.getenv("kb_pwd")
+  ) 
+```
+
+## OpenAIRE Publications
+
+To start with, a sample of publications indexed in OpenAIRE with EC-funding acknwoledgement was used. Only projects where the University of Göttingen participates in were investigated. These data were comiled for the OpenAIRE  Institutional Dashboard Pilot:
+<https://subugoe.shinyapps.io/openaire_ugoe/>
+
+Obtain publications:
+
+```{r}
+library(jsonlite)
+ugoe_pubs <- jsonlite::stream_in(file("data/pubs_ugoe.json"), verbose = FALSE) %>%
+  as_tibble()
+```
+
+In total, the sample consists of `r length(unique(ugoe_pubs$openaire_id))` distinct records.
+
+For matching, we will use the DOI article identifier:
+
+```{r}
+ugoe_dois_df <- ugoe_pubs %>% 
+  select(pid, access, openaire_project_id, openaire_id) %>% 
+  unnest(cols = c(pid)) %>% 
+  mutate(pid_type = ifelse(grepl("^10.", pid), "doi", NA)) %>%
+  mutate(pid = tolower(pid)) %>%
+  mutate(openaire_project_id = as.character(openaire_project_id))
+```
+
+In total, `r ugoe_dois_df %>% filter(pid_type == "doi") %>% distinct(openaire_id) %>% nrow()` records have a DOI, representing a share of `r round(ugoe_dois_df %>% filter(pid_type == "doi") %>% distinct(openaire_id) %>% nrow() / length(unique(ugoe_pubs$openaire_id)) * 100, 2)` %. 
+
+Store in KB Table Space
+
+```{r}
+ugoe_dois <- ugoe_dois_df %>%
+  filter(pid_type == "doi") %>%
+  distinct(pid) %>%
+  mutate(pid = trimws(pid))
+```
+
+```{r}
+dbWriteTable(conn = jdbcConnection, 
+             name = "openaire_ugoe_dois", 
+             value = ugoe_dois,
+             overwrite = TRUE)
+```
+
+## DOI coverage in WoS-KB
+
+```{sql, connection=jdbcConnection, output.var="openaire_wos_doi"}
+select
+        wos_b_2019.items.doi,
+        wos_b_2019.items.doctype 
+    from
+        wos_b_2019.items 
+    inner join
+        openaire_ugoe_dois 
+            on lower(wos_b_2019.items.doi) = openaire_ugoe_dois.pid
+```
+
+```{r}
+openaire_wos_doi %>%
+  group_by(DOCTYPE) %>%
+  summarise(n= n_distinct(DOI)) %>%
+  arrange(desc(n)) 
+```
+
+In total `r length(unique(openaire_wos_doi$DOI))` DOIs were both indexed in OpenAIRE and Wos-KB.
+
+## Merge with WOS-KB funding info
+
+```{sql, connection=jdbcConnection, output.var="openaire_wos"}
+select
+        wos_b_2019.fundingorganizations.fundingorganization,
+        wos_b_2019.grantnumbers.grantnumber,
+        wos_b_2019.items.doi 
+    from
+        wos_b_2019.items 
+    inner join
+        wos_b_2019.grantnumbers    
+            on wos_b_2019.grantnumbers.fk_items = wos_b_2019.items.pk_items 
+    inner join
+        wos_b_2019.fundingorganizations    
+            on wos_b_2019.fundingorganizations.pk_fundingorganizations = wos_b_2019.grantnumbers.fk_fundingorganizations 
+    inner join
+        openaire_ugoe_dois 
+            on lower(wos_b_2019.items.doi) = openaire_ugoe_dois.pid
+```
+
+### Funding Organization
+
+```{r}
+openaire_wos %>%
+  as_tibble() %>%
+  mutate(eu_funding = ifelse(grepl("^EU|^Eur|^ERC", FUNDINGORGANIZATION), "EU", NA)) %>% 
+  filter(eu_funding == "EU") 
+```
+
+In total, `r openaire_wos %>% mutate(eu_funding = ifelse(grepl("^EU|^Eur|^ERC", FUNDINGORGANIZATION), "EU", NA)) %>% filter(eu_funding == "EU") %>% distinct(DOI) %>% nrow()` Web of Science records acknowledge the European Commission as funder (`wos_b_2019.fundingorganizations.fundingorganization`).
+
+There is a certain variation how EU support is acknowledged in `wos_b_2019.fundingorganizations.fundingorganization`: `r openaire_wos %>% mutate(eu_funding = ifelse(grepl("^EU|^Eur|^ERC", FUNDINGORGANIZATION), "EU", NA)) %>% filter(eu_funding == "EU") %>% distinct(FUNDINGORGANIZATION) %>% nrow()` variants were found based on our sample.
+
+Example
+
+```{r}
+openaire_wos %>%
+  as_tibble() %>%
+  mutate(eu_funding = ifelse(grepl("^EU|^Eur|^ERC", FUNDINGORGANIZATION), "EU", NA)) %>% 
+  filter(eu_funding == "EU") %>%
+  distinct(FUNDINGORGANIZATION, GRANTNUMBER) %>%
+  head()
+```
+
+### Grant Agreements
+
+EU Grant IDs end with a six-digit number
+
+```{r}
+openaire_wos_grant <- openaire_wos %>% 
+  mutate(eu_funding = ifelse(grepl("^EU|^Eur|^ERC", FUNDINGORGANIZATION), "EU", NA)) %>% 
+  filter(eu_funding == "EU") %>%
+  mutate(eu_grant_id = str_extract(GRANTNUMBER, "[0-9]{6,6}")) %>%
+  mutate(doi = tolower(DOI)) %>%
+  inner_join(ugoe_dois_df, by = c("doi" = "pid", "eu_grant_id" = "openaire_project_id"))
+```
+
+In total, `r length(unique(openaire_wos_grant$doi))` WoS-KB records have identical Grant IDs.
+
+## Summary 
+
+![Flow Chart](flow.png)
