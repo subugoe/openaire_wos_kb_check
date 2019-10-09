@@ -3,6 +3,10 @@ Exploration: Funding Acknowledgements from OpenAIRE in WOS-KB
 Najko Jahn
 10/7/2019
 
+``` r
+require(tidyverse)
+```
+
 ## OpenAIRE Publications
 
 To start with, a sample of publications indexed in OpenAIRE with
@@ -34,13 +38,28 @@ ugoe_dois_df <- ugoe_pubs %>%
 
 In total, 1313 records have a DOI, representing a share of 85.15 %.
 
-Store in KB Table Space
-
 ``` r
 ugoe_dois <- ugoe_dois_df %>%
   filter(pid_type == "doi") %>%
   distinct(pid) %>%
   mutate(pid = trimws(pid))
+```
+
+Connect to WOS-KB and Store in KB Table Space
+
+``` r
+require(RJDBC)
+require(rJava)
+.jinit()
+jdbcDriver <-
+  JDBC(driverClass = "oracle.jdbc.OracleDriver", classPath = "inst/jdbc_driver/ojdbc8.jar")
+jdbcConnection <-
+  dbConnect(
+    jdbcDriver,
+    "jdbc:oracle:thin:@//biblio-p-db01:1521/bibliodb01.fiz.karlsruhe",
+    Sys.getenv("kb_user"),
+    Sys.getenv("kb_pwd")
+  ) 
 ```
 
 ``` r
