@@ -5,6 +5,11 @@ date: "10/7/2019"
 output: github_document
 ---
 
+## Summary 
+
+![Flow Chart](flow.png)
+
+
 ```{r, echo = FALSE, message = FALSE, warning = FALSE}
 knitr::opts_chunk$set(
   comment = "#>",
@@ -15,18 +20,15 @@ knitr::opts_chunk$set(
 )
 ```
 
-```{r setup, echo = TRUE}
-require(tidyverse)
-```
-
 ## OpenAIRE Publications
 
-To start with, a sample of publications indexed in OpenAIRE with EC-funding acknwoledgement was used. Only projects where the University of Göttingen participates in were investigated. These data were comiled for the OpenAIRE  Institutional Dashboard Pilot:
+To start with, a sample of grant-supported publications indexed in OpenAIRE with EC-funding acknwoledgement was used. Only H2020 EC-projects with participation from the University of Göttingen were investigated. These data were already obtained for the OpenAIRE Institutional Dashboard Pilot:
 <https://subugoe.shinyapps.io/openaire_ugoe/>
 
-Obtain publications:
+Load publications:
 
 ```{r}
+library(tidyverse)
 library(jsonlite)
 ugoe_pubs <- jsonlite::stream_in(file("data/pubs_ugoe.json"), verbose = FALSE) %>%
   as_tibble()
@@ -34,7 +36,7 @@ ugoe_pubs <- jsonlite::stream_in(file("data/pubs_ugoe.json"), verbose = FALSE) %
 
 In total, the sample consists of `r length(unique(ugoe_pubs$openaire_id))` distinct records.
 
-For matching, we will use the DOI article identifier:
+For matching, the DOI article identifier is used:
 
 ```{r}
 ugoe_dois_df <- ugoe_pubs %>% 
@@ -47,6 +49,8 @@ ugoe_dois_df <- ugoe_pubs %>%
 
 In total, `r ugoe_dois_df %>% filter(pid_type == "doi") %>% distinct(openaire_id) %>% nrow()` records have a DOI, representing a share of `r round(ugoe_dois_df %>% filter(pid_type == "doi") %>% distinct(openaire_id) %>% nrow() / length(unique(ugoe_pubs$openaire_id)) * 100, 2)` %. 
 
+Store records with DOIs in separate data.frame
+
 ```{r}
 ugoe_dois <- ugoe_dois_df %>%
   filter(pid_type == "doi") %>%
@@ -54,8 +58,7 @@ ugoe_dois <- ugoe_dois_df %>%
   mutate(pid = trimws(pid))
 ```
 
-Connect to WOS-KB and Store in KB Table Space
-
+Connect to WOS-KB and store data.frame in KB Table Space
 
 ```{r}
 require(RJDBC)
@@ -81,6 +84,8 @@ dbWriteTable(conn = jdbcConnection,
 
 ## DOI coverage in WoS-KB
 
+Matching using Oracle SQL statement:
+
 ```{sql, connection=jdbcConnection, output.var="openaire_wos_doi"}
 select
         wos_b_2019.items.doi,
@@ -92,6 +97,8 @@ select
             on lower(wos_b_2019.items.doi) = openaire_ugoe_dois.pid
 ```
 
+Summary stats
+
 ```{r}
 openaire_wos_doi %>%
   group_by(DOCTYPE) %>%
@@ -102,6 +109,8 @@ openaire_wos_doi %>%
 In total `r length(unique(openaire_wos_doi$DOI))` DOIs were both indexed in OpenAIRE and Wos-KB.
 
 ## Merge with WOS-KB funding info
+
+Oracle SQL statement to obtain funding information from WoS-KB for the OpenAIRE-DOI-sample
 
 ```{sql, connection=jdbcConnection, output.var="openaire_wos"}
 select
@@ -122,6 +131,8 @@ select
 ```
 
 ### Funding Organization
+
+Identify the European Commission as funding organization using pattern matching.
 
 ```{r}
 openaire_wos %>%
@@ -147,7 +158,7 @@ openaire_wos %>%
 
 ### Grant Agreements
 
-EU Grant IDs end with a six-digit number
+Extract EU Grant IDs, which end with a six-digit number
 
 ```{r}
 openaire_wos_grant <- openaire_wos %>% 
@@ -160,6 +171,12 @@ openaire_wos_grant <- openaire_wos %>%
 
 In total, `r length(unique(openaire_wos_grant$doi))` WoS-KB records have identical Grant IDs.
 
-## Summary 
+How many `GRANTNUMBER` values consists of a six-digit number:
 
-![Flow Chart](flow.png)
+```{r}
+openaire_wos %>% 
+  mutate(eu_funding = ifelse(grepl("^EU|^Eur|^ERC", FUNDINGORGANIZATION), "EU", NA)) %>% 
+  filter(eu_funding == "EU") %>%
+  filter(grepl("^[0-9]{6,6}", GRANTNUMBER)) 
+```
+
