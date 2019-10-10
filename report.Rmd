@@ -177,6 +177,7 @@ How many `GRANTNUMBER` values consists of a six-digit number:
 openaire_wos %>% 
   mutate(eu_funding = ifelse(grepl("^EU|^Eur|^ERC", FUNDINGORGANIZATION), "EU", NA)) %>% 
   filter(eu_funding == "EU") %>%
-  filter(grepl("^[0-9]{6,6}", GRANTNUMBER)) 
+  filter(grepl("^[0-9]{6,6}", GRANTNUMBER)) %>%
+  as_tibble()
 ```
 
